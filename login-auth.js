@@ -129,6 +129,11 @@ async function signInEmail() {
 
 // ── Sign Up ──
 async function signUpEmail() {
+  // Account creation no longer happens on the login page. Everyone goes through the
+  // funnel (choose a plan -> Stripe checkout -> signup.html). Any stray call to this
+  // function is routed to pricing instead of creating a free, un-paid account.
+  window.location.href = 'index.html#pricing';
+  return;
   const email = ($('signup-email')?.value || '').trim();
   const password = $('signup-password')?.value || '';
   const password2 = $('signup-password2')?.value || '';
