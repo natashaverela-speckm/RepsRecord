@@ -63,11 +63,47 @@ function setMode(mode) {
   }
 }
 
+// ── Funnel guard for Google sign-in ──
+// Google OAuth signs in existing users AND silently creates a brand-new account for a
+// first-time Google user. We don't want a brand-new person landing inside the app with a
+// free, un-paid account created outside the trial funnel. So: if the signed-in account was
+// JUST created in this OAuth AND has no active subscription, sign it out and send them to
+// pricing to start the trial the proper way. Returning customers — active OR lapsed — are
+// never affected (their account isn't brand-new). Any error FAILS OPEN so a real customer
+// is never locked out.
+async function routeBrandNewToFunnel(session) {
+  try {
+    const u = session && session.user;
+    if (!u || !u.created_at) return false;
+    const ageMs = Date.now() - new Date(u.created_at).getTime();
+    if (!(ageMs >= 0 && ageMs < 5 * 60 * 1000)) return false; // not brand-new -> leave alone
+    let hasActive = false;
+    try {
+      const res = await fetch(SUPABASE_URL + '/rest/v1/subscriptions?user_id=eq.' + u.id + '&select=status', {
+        headers: { 'apikey': SUPABASE_ANON_KEY, 'Authorization': 'Bearer ' + session.access_token }
+      });
+      if (!res.ok) return false; // couldn't verify -> fail open
+      const rows = await res.json().catch(() => []);
+      hasActive = Array.isArray(rows) && rows.some(r => ['active', 'trialing', 'past_due'].includes(r.status));
+    } catch (e) {
+      return false; // network error -> fail open
+    }
+    if (hasActive) return false; // already a paying account -> let them in
+    // Brand-new AND unpaid: came in outside the funnel. Route to the trial the right way.
+    try { await sb.auth.signOut(); } catch (e) {}
+    window.location.replace('index.html#pricing');
+    return true; // handled -> caller must NOT goApp
+  } catch (e) {
+    return false; // any unexpected error -> fail open
+  }
+}
+
 // ── Already signed in? ──
-sb.auth.onAuthStateChange((_event, session) => {
+sb.auth.onAuthStateChange(async (_event, session) => {
   if (!session) return;
   const params = new URLSearchParams(window.location.search);
   if (params.get('mode') === 'signup' || params.get('plan')) return;
+  if (await routeBrandNewToFunnel(session)) return;
   if (session.user.email_confirmed_at) {
     goApp();
   } else {
@@ -81,6 +117,7 @@ sb.auth.onAuthStateChange((_event, session) => {
     if (params.get('mode') === 'signup' || params.get('plan')) return;
     const { data: { session } } = await sb.auth.getSession();
     if (!session) return;
+    if (await routeBrandNewToFunnel(session)) return;
     if (session.user.email_confirmed_at) {
       goApp();
     } else {
