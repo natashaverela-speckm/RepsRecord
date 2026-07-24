@@ -399,14 +399,15 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,te
 <!-- Remy backdrop -->
 <div id="remy-backdrop" data-act="toggleRemy" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);z-index:599;backdrop-filter:blur(2px);"></div>
 
+
 <!-- ═══════════════════════════════════════════════════════════════════════
      CONTACT SUPPORT  —  self-contained module for RepsRecord
      WHERE TO PASTE: in app.html, immediately BEFORE the closing </body> tag.
-     WHAT IT DOES:   adds a "Contact Support" item to the app (next to Sign Out,
-                     or a floating button if the menu isn't found), opens an
+     WHAT IT DOES:   adds a floating "Contact" button to the app (bottom-left),
+                     opens an
                      in-app modal, and sends the message to Formspree, which
                      emails it to support@repsrecord.com. User stays in the app.
-     ══════════════════════════════════════════════════════════════════════ -->
+     ═══════════════════════════════════════════════════════════════════════ -->
 <div id="rr-contact-overlay" role="dialog" aria-modal="true" aria-labelledby="rr-contact-title"
      style="display:none;position:fixed;inset:0;z-index:99999;background:rgba(13,31,60,.55);align-items:center;justify-content:center;padding:20px;">
   <div style="background:#fff;max-width:460px;width:100%;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.3);overflow:hidden;font-family:inherit;">
@@ -481,21 +482,6 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,te
     if (e.key === 'Escape' && overlay.style.display === 'flex') closeModal();
   });
 
-  function makeTrigger() {
-    if (document.getElementById('rr-contact-trigger')) return true;
-    var signOut = document.querySelector('[data-act="signOut"]');
-    if (signOut && signOut.parentNode) {
-      var item = document.createElement(signOut.tagName.toLowerCase());
-      item.id = 'rr-contact-trigger';
-      item.textContent = '📧 Contact Support';
-      if (signOut.className) item.className = signOut.className;
-      try { item.type = 'button'; } catch (e) {}
-      item.addEventListener('click', function (e) { e.preventDefault(); openModal(); });
-      signOut.parentNode.insertBefore(item, signOut);
-      return true;
-    }
-    return false;
-  }
   function makeFloating() {
     if (document.getElementById('rr-contact-trigger')) return;
     var b = document.createElement('button');
@@ -508,10 +494,10 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,te
     b.addEventListener('click', openModal);
     document.body.appendChild(b);
   }
-  function ensureTrigger() { if (!makeTrigger()) makeFloating(); }
-  ensureTrigger();
-  setTimeout(ensureTrigger, 1500);
-  setTimeout(ensureTrigger, 4000);
+  makeFloating();
+  setTimeout(makeFloating, 1500);
+  setTimeout(makeFloating, 4000);
+  setInterval(makeFloating, 5000);
 
   $('rr-contact-form').addEventListener('submit', function (e) {
     e.preventDefault();
@@ -539,7 +525,7 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,te
   });
 })();
 </script>
-<!-- ═══════════════════ END CONTACT SUPPORT ════════════════════ -->
+<!-- ═══════════════════ END CONTACT SUPPORT ═══════════════════ -->
 
 </body>
 </html>
