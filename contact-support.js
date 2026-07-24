@@ -128,7 +128,7 @@
       overlay = buildOverlay();
     }
     if (!document.getElementById('rr-contact-trigger')) {
-      var b = el('button', 'position:fixed;left:16px;bottom:16px;z-index:9998;background:#0D1F3C;color:#fff;' +
+      var b = el('button', 'position:fixed;right:16px;bottom:16px;z-index:9998;background:#0D1F3C;color:#fff;' +
         'border:none;border-radius:24px;padding:10px 16px;font-size:13px;font-weight:700;' +
         'box-shadow:0 4px 14px rgba(0,0,0,.25);cursor:pointer;font-family:inherit;',
         { id: 'rr-contact-trigger', type: 'button', 'aria-label': 'Contact Support', text: '\ud83d\udce7 Contact' });
