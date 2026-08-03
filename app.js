@@ -174,6 +174,7 @@ const CLICK_ACTIONS={
   addPropType:el=>{showPropForm=true;go('properties');setTimeout(()=>{const tp=document.getElementById('p-tp');if(tp){tp.value=el.dataset.proptype;togglePropType();}},50);},
 };
 const CHANGE_ACTIONS={
+  setTaxpayerName:el=>setTaxpayerName(el.value),
   setYear:el=>{activeYear=parseInt(el.value);renderView();},
   importFile:el=>handleImportFile(el),
   previewFiles:el=>previewFiles(el),
@@ -704,6 +705,39 @@ async function attestSync(){
     console.warn('[attest] deferred:',err&&err.message);
   }finally{_attestBusy=false;}
 }
+
+// ── Report support (audit finding H-4) ──────────────────────────────────────
+// The ledger written by attestSync() holds the database-set created_at for each
+// entry. That is the only field in the system a taxpayer cannot set, which makes
+// it the most useful column in an examination — and until now it was captured
+// but never shown in the report an examiner would actually read.
+function attestLookup(legacyId){
+  const m=_attestLoad(); const r=m&&m[legacyId];
+  return (r&&r.at)?r:null;
+}
+function attestLagDays(entryDate,createdAtIso){
+  try{
+    const a=new Date(entryDate+'T00:00:00Z'), b=new Date(createdAtIso);
+    return Math.max(0,Math.round((Date.UTC(b.getUTCFullYear(),b.getUTCMonth(),b.getUTCDate())-a.getTime())/86400000));
+  }catch(e){return null;}
+}
+function attestStats(entries){
+  let attested=0,within7=0,within30=0,later=0,unattested=0;
+  entries.forEach(e=>{
+    const r=attestLookup(e.id);
+    if(!r){unattested++;return;}
+    attested++;
+    const d=attestLagDays(e.date,r.at);
+    if(d===null)return;
+    if(d<=7)within7++; else if(d<=30)within30++; else later++;
+  });
+  return{attested,within7,within30,later,unattested,total:entries.length};
+}
+function fmtLogged(iso){
+  if(!iso)return null;
+  try{const d=new Date(iso);return d.toISOString().slice(0,10)+' '+d.toISOString().slice(11,16)+'Z';}catch(e){return null;}
+}
+function setTaxpayerName(v){state.settings.taxpayerName=(v||'').slice(0,120);save();}
 
 function scheduleAttest(){clearTimeout(_attestTimer);_attestTimer=setTimeout(attestSync,2500);}
 
@@ -2541,7 +2575,33 @@ function vReports(){
   const _strHrsTotal=ye.filter(e=>!e.isSpouse&&e.trackType==='STR').reduce((s,e)=>s+(e.hours||0),0);
   const _strHrsCounted=_inc?ye.filter(e=>!e.isSpouse&&e.trackType==='STR'&&_strYesIds.has(e.propertyId)).reduce((s,e)=>s+(e.hours||0),0):0;
   const strHrsExcluded=Math.max(0,_strHrsTotal-_strHrsCounted);
+  const _att=attestStats(sorted);
+  const _tp=(state.settings.taxpayerName||'').trim();
+  const _gen=new Date();
   return`
+<div class="card" style="border:1.5px solid #0D1F3C;margin-bottom:14px;">
+  <div style="font-size:10px;font-weight:800;letter-spacing:.09em;color:#64748B;text-transform:uppercase;margin-bottom:10px;">Contemporaneous Time Record \u2014 IRC \u00A7469</div>
+  <table style="width:100%;font-size:12px;border-collapse:collapse;">
+    <tr><td style="padding:3px 0;color:#64748B;width:36%;">Taxpayer</td><td style="padding:3px 0;"><input value="${esc(_tp)}" placeholder="Enter name as filed" data-chg="setTaxpayerName" style="border:none;border-bottom:1px solid #CBD5E1;font-size:12px;font-weight:700;color:#0D1F3C;padding:2px 0;width:100%;max-width:280px;background:transparent;font-family:inherit;"/></td></tr>
+    <tr><td style="padding:3px 0;color:#64748B;">Taxpayer identification no.</td><td style="padding:3px 0;color:#94A3B8;">___________________ &nbsp;<span style="font-size:10.5px;">(write in at filing \u2014 deliberately not stored)</span></td></tr>
+    <tr><td style="padding:3px 0;color:#64748B;">Tax year</td><td style="padding:3px 0;font-weight:700;color:#0D1F3C;">${activeYear}</td></tr>
+    <tr><td style="padding:3px 0;color:#64748B;">Report generated</td><td style="padding:3px 0;color:#0D1F3C;">${_gen.toISOString().slice(0,10)} ${_gen.toISOString().slice(11,16)}Z</td></tr>
+    <tr><td style="padding:3px 0;color:#64748B;">Entries in this report</td><td style="padding:3px 0;color:#0D1F3C;">${sorted.length} \u00B7 ${fmtH(tot)} total</td></tr>
+  </table>
+
+  <div style="margin-top:12px;padding:11px 13px;border-radius:8px;background:${_att.unattested===0?'#F0FDFA':'#FFFBEB'};border:1px solid ${_att.unattested===0?'#99F6E4':'#FDE68A'};">
+    <div style="font-size:11.5px;font-weight:800;color:#0D1F3C;margin-bottom:6px;">Record integrity \u2014 when each entry was created</div>
+    <div style="font-size:11.5px;color:#334155;line-height:1.75;">Each entry below carries a creation timestamp <strong>set by the server</strong> at the moment it was saved. It is not supplied by this device and cannot be altered by the account holder. Editing an entry preserves the original and its timestamp as a superseded version; deleting an entry marks it removed rather than erasing it.</div>
+    <div style="margin-top:8px;display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;">
+      <span style="color:#065F46;"><strong>${_att.within7}</strong> logged within 7 days of the activity</span>
+      <span style="color:#0E7490;"><strong>${_att.within30}</strong> within 8\u201330 days</span>
+      <span style="color:#92400E;"><strong>${_att.later}</strong> after 30 days</span>
+      ${_att.unattested>0?`<span style="color:#991B1B;"><strong>${_att.unattested}</strong> without a server timestamp</span>`:''}
+    </div>
+    ${_att.unattested>0?`<div style="margin-top:8px;font-size:11px;color:#92400E;line-height:1.6;">\u26A0 Entries without a server timestamp predate this feature or were created offline. They remain valid records, but their creation date rests on this device rather than on independent corroboration \u2014 disclose them as such if asked.</div>`:''}
+  </div>
+</div>
+
 <div class="ph">
   <div class="ph-row">
     <div><h1 class="pg-title">Audit Report <span style='font-size:13px;font-weight:400;color:#64748B;'>/ Real-Time Hour Log</span></h1><div class="pg-sub">IRC §469(c)(7) REPS &amp; Temp. Reg. §1.469-5T STR — Tax Year ${activeYear} — Prepared for IRS substantiation</div></div>
@@ -2614,9 +2674,10 @@ ${ltrs.length?`
   ${thinCount>0?`<div style="margin-bottom:12px;font-size:11.5px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:9px 13px;line-height:1.6;">⚠ <strong>${thinCount} ${thinCount===1?'entry has':'entries have'} a missing or very short description.</strong> Contemporaneous logs should state what was done, for which property, and the outcome — vague or blank descriptions are a common audit weakness (e.g. <em>Pohoski v. Commissioner</em>, <em>Moss v. Commissioner</em>). Flagged rows are marked ⚠ below.</div>`:''}
   ${sorted.length===0?`<div class="empty" style="padding:20px 0;"><div class="empty-tx">No entries logged yet.</div></div>`:`
   <table style="table-layout:fixed;">
-    <thead><tr><th style="width:11%">Date</th><th style="width:17%">Property</th><th style="width:8%">Type</th><th style="width:25%">Activity</th><th style="width:8%">Hours</th><th style="width:31%">Notes</th></tr></thead>
+    <thead><tr><th style="width:9%">Date</th><th style="width:14%">Logged on <span style="font-weight:400;text-transform:none;">(server)</span></th><th style="width:14%">Property</th><th style="width:6%">Type</th><th style="width:19%">Activity</th><th style="width:7%">Hours</th><th style="width:31%">Notes</th></tr></thead>
     <tbody>${sorted.map(e=>{const pr=state.properties.find(p=>p.id===e.propertyId);return`<tr>
       <td style="font-size:11px;color:#64748B;">${e.date}</td>
+      <td style="font-size:10.5px;line-height:1.35;">${(()=>{const r=attestLookup(e.id);if(!r)return'<span style="color:#B45309;" title="No server timestamp">not attested</span>';const d=attestLagDays(e.date,r.at);const c=d===null?'#64748B':d<=7?'#065F46':d<=30?'#0E7490':'#92400E';return`<span style="color:${c};">${fmtLogged(r.at)}</span>${d!==null?`<br><span style="color:#94A3B8;font-size:9.5px;">${d===0?'same day':d+' day'+(d===1?'':'s')+' later'}</span>`:''}`;})()}</td>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;">${pr?.name||'General'}</td>
       <td><span class="tb tb-${e.trackType==='STR'?'s':'r'}">${e.trackType}</span>${e.isSpouse?'<span class="tb tb-sp">SP</span>':''}</td>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;">${esc(e.category)}</td>
