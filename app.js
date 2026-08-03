@@ -500,12 +500,42 @@ async function cloudLoad(){
   }catch(e){return null;}
 }
 
+// AUDIT FIX (C-2): refuse to overwrite a populated cloud record with an empty
+// local one. The whole dataset is a single JSON document written wholesale, so a
+// tab that opened before cloudLoad() finished — or a crashed renderer, or a
+// device that came back online with stale state — could previously replace
+// years of records with {}. Last write wins, no merge, no recovery.
+//
+// The guard is deliberately narrow: it only blocks a save where local is EMPTY
+// and remote is NOT. Every legitimate edit still saves. A user who genuinely
+// wants to erase everything goes through Reset All Data, which sets this flag.
+let _allowEmptySave=false;
+async function _cloudWouldDestroy(session){
+  try{
+    if((state.entries||[]).length>0||(state.properties||[]).length>0)return false;
+    if(_allowEmptySave)return false;
+    const res=await fetch(`${SUPABASE_URL}/rest/v1/user_data?user_id=eq.${_sbUser.id}&select=data`,{
+      headers:{'Authorization':`Bearer ${session.access_token}`,'apikey':SUPABASE_ANON_KEY,'Accept':'application/json'}});
+    if(!res.ok)return false;
+    const rows=await res.json();
+    if(!rows.length||!rows[0].data)return false;
+    const d=rows[0].data;
+    return (d.entries&&d.entries.length>0)||(d.properties&&d.properties.length>0);
+  }catch(e){return false;}
+}
+
 async function cloudSave(){
   if(!_sbUser||!_sb){_syncStatus='local';updateSyncIndicator();return;}
   _syncStatus='syncing';updateSyncIndicator();
   try{
     const{data:{session}}=await _sb.auth.getSession();
     if(!session){_syncStatus='local';updateSyncIndicator();return;}
+    if(await _cloudWouldDestroy(session)){
+      _syncStatus='local';updateSyncIndicator();
+      console.warn('[cloudSave] blocked: local state is empty but cloud has records');
+      toast('Sync paused \u2014 this device has no records but your account does. Reload the page to pull your data down. Nothing has been overwritten.','warn',{duration:12000});
+      return;
+    }
     const res=await fetch(`${SUPABASE_URL}/rest/v1/user_data`,{
       method:'POST',
       headers:{'Authorization':`Bearer ${session.access_token}`,'apikey':SUPABASE_ANON_KEY,'Content-Type':'application/json','Prefer':'resolution=merge-duplicates'},
@@ -620,7 +650,8 @@ function _attestPersist(){
 // Content fingerprint: if any substantive field changes, this changes, and the
 // entry is amended rather than left stale.
 function _attestFingerprint(e){
-  return [e.date,e.hours,e.category,e.trackType||e.type,e.notes||'',e.propertyId||'',e.isSpouse?1:0].join('\u0001');
+  return [e.date,e.hours,e.category,e.trackType||e.type,e.notes||'',e.propertyId||'',e.isSpouse?1:0,
+          (Array.isArray(e.attachments)?e.attachments.map(a=>a&&a.path).join(','):'')].join('\u0001');
 }
 
 async function _attestHeaders(){
@@ -641,7 +672,11 @@ function _attestRow(e){
     category:e.category||'Uncategorized',
     track_type:(e.trackType||e.type)==='STR'?'STR':'REPS',
     is_spouse:!!e.isSpouse,
-    notes:e.notes||''
+    notes:e.notes||'',
+    // Evidence files travel with the attested entry (migration 0003). Without
+    // this the attested record would be incomplete and a future read-path
+    // cutover would silently drop every attachment.
+    attachments:Array.isArray(e.attachments)?e.attachments:[]
   };
 }
 
@@ -877,43 +912,8 @@ function ltrGroupMet(){return mpGroupedLTR().tests.some(t=>t.met);}
 // necessary but NOT sufficient. We do not yet capture "significant personal services",
 // so the 8–30-day band is reported as CONDITIONAL rather than auto-qualifying, and
 // >30-day / unset properties do not qualify on material participation alone.
-// ── Average rental period provenance (audit finding H-3) ────────────────────
-// The average period of customer use is the THRESHOLD fact for the entire STR
-// position: fail Reg. §1.469-1T(e)(3)(ii) and the activity stays a rental
-// activity, making every logged hour irrelevant. A figure typed into a box is
-// not evidence of it. This returns the value together with where it came from,
-// so every screen can be honest about which it is showing.
-function avgRentalInfo(p){
-  const bk=(p&&Array.isArray(p.bookings))?p.bookings.filter(b=>b&&b.checkIn&&b.checkOut):[];
-  if(bk.length){
-    const nights=bk.reduce((s,b)=>{
-      const d=Math.round((new Date(b.checkOut)-new Date(b.checkIn))/86400000);
-      return s+(d>0?d:0);
-    },0);
-    if(nights>0){
-      return{days:Math.round((nights/bk.length)*10)/10,source:'computed',substantiated:true,
-             bookings:bk.length,nights:nights,
-             basis:`${nights} total nights \u00F7 ${bk.length} booking${bk.length===1?'':'s'} (Reg. \u00A71.469-1T(e)(3)(iii))`};
-    }
-  }
-  const m=(p&&p.avgRentalDays!=null&&p.avgRentalDays!=='')?Number(p.avgRentalDays):null;
-  if(m!=null&&!isNaN(m)){
-    return{days:m,source:'manual',substantiated:false,bookings:0,nights:0,
-           basis:'Entered manually \u2014 no booking records on file'};
-  }
-  return{days:null,source:'none',substantiated:false,bookings:0,nights:0,basis:'Not established'};
-}
-// Short inline marker used wherever the average is displayed.
-function avgFlag(p,style){
-  const a=avgRentalInfo(p);
-  if(a.days==null||a.substantiated)return'';
-  return style==='badge'
-    ? `<span class="badge b-amber" title="No booking records support this figure">\u26A0 unsubstantiated</span>`
-    : `<span style="font-size:10.5px;color:#B45309;font-weight:700;" title="No booking records support this figure">\u26A0 unsubstantiated</span>`;
-}
-
 function strGate(p){
-  const d=avgRentalInfo(p).days;               // bookings are authoritative when present
+  const d=(p&&p.avgRentalDays!=null&&p.avgRentalDays!=='')?Number(p.avgRentalDays):null;
   if(d==null||isNaN(d))return'unknown';        // average not set yet
   if(d<=TAX.STR_AVG_DAYS)return'exempt';        // ≤7   → §(ii)(A): not a rental activity
   if(d<=TAX.STR_MID_DAYS)return'services';      // 8–30 → §(ii)(B): needs significant personal services
@@ -1691,12 +1691,11 @@ ${state.properties.filter(p=>!p.sold).map(p=>{
       <div class="prop-nm">${esc(p.name)}</div>${p.address?`<div class="prop-addr">${esc(p.address)}</div>`:''}
       <div class="prop-tags">
         <span class="badge ${p.type==='STR'?'b-blue':'b-amber'}">${p.type}</span>
-        ${p.type==='STR'&&avgRentalInfo(p).days!=null?(()=>{const a=avgRentalInfo(p);return`<span class="badge ${a.days<=7?'b-met':a.days<=30?'b-amber':'b-no'}" title="${esc(a.basis)}">Avg ${a.days}d ${a.days<=7?'\u2713 qualifies':a.days<=30?'\u26A0 needs personal services':'\u2717 >30 days'}${a.substantiated?' \uD83D\uDCC5':''}</span>${avgFlag(p,'badge')}`;})():''}
+        ${p.type==='STR'&&p.avgRentalDays?`<span class="badge ${p.avgRentalDays<=7?'b-met':p.avgRentalDays<=30?'b-amber':'b-no'}">Avg ${p.avgRentalDays}d ${p.avgRentalDays<=7?'✓ qualifies':p.avgRentalDays<=30?'⚠ needs personal services':'✗ >30 days'}${p.bookings&&p.bookings.length?' 📅':''}</span>`:''}
         ${p.otherHours>0?`<span style="font-size:11px;color:#64748B;">Others: ${p.otherHours}h/yr</span>`:''}
       </div>
       ${p.type==='STR'&&p.avgRentalDays>7&&p.avgRentalDays<=30?`<div style="margin-top:8px;font-size:11px;color:#92400E;background:#FFF7ED;border:1px solid #FDE68A;border-radius:6px;padding:6px 10px;line-height:1.6;">⚠ <strong>8–30 day average rental period:</strong> Material participation alone may not be enough. The IRS also requires "significant personal services" under §1.469-1T(e)(3)(ii)(B). Confirm with your CPA.</div>`:''}
       ${p.type==='STR'&&p.avgRentalDays>30?`<div style="margin-top:8px;font-size:11px;color:#991B1B;background:#FEF2F2;border:1px solid #FECACA;border-radius:6px;padding:6px 10px;line-height:1.6;">⛔ <strong>Average rental period over 30 days</strong> — the STR exception does not apply. This property is treated as a standard rental under §469 and needs REPS for non-passive treatment.</div>`:''}
-      ${p.type==='STR'&&avgRentalInfo(p).source==='manual'?`<div style="margin-top:8px;font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:7px 10px;line-height:1.6;">\u26A0 <strong>This average is entered manually.</strong> The average period of customer use decides whether this property escapes rental treatment at all \u2014 if it fails, every hour you log here is irrelevant. Add your bookings below and the figure will be calculated from them, and the audit report will show the arithmetic instead of asserting a number.</div>`:''}
       ${p.type==='STR'&&!p.avgRentalDays?`<div style="margin-top:8px;font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:6px 10px;">⚠ No average rental period set — edit this property or use the Booking Log to calculate it. This is required to confirm STR exception eligibility.</div>`:''}
     </div>
     <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
@@ -2603,7 +2602,7 @@ ${sps.length?`
   ${sps.map(p=>{const ph=pH(p.id),ts=mpT(p.id),any=ts.some(t=>t.met),best=ts.find(t=>t.met),q=strQualifies(p);const bl=best?best.label:'';const badgeSpan=q==='yes'?`<span class="badge b-met">✓ Qualifies — MP via ${bl}</span>`:any?`<span class="badge" style="background:#FEF3C7;color:#92400E;">${q==='conditional'?'⚠ MP via '+bl+' · 8–30-day avg (needs significant services)':'⚠ MP via '+bl+' · period gate not met'}</span>`:'<span class="badge b-no">Does Not Qualify</span>';return`
   <div style="margin-bottom:14px;padding-bottom:14px;border-bottom:.5px solid #F0FDFA;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <div><strong>${esc(p.name)}</strong>${p.address?` <span style="font-size:11px;color:#64748B;">· ${esc(p.address)}</span>`:''} ${(()=>{const a=avgRentalInfo(p);if(a.days==null)return'<span style="font-size:11px;color:#B45309;">\u00B7 avg rental period not established</span>';return`<span style="font-size:11px;color:${a.days<=7?'#10B981':'#F59E0B'};">\u00B7 Avg ${a.days}d</span> <span style="font-size:10.5px;color:${a.substantiated?'#64748B':'#B45309'};">(${esc(a.basis)})</span>`;})()}</div>
+      <div><strong>${esc(p.name)}</strong>${p.address?` <span style="font-size:11px;color:#64748B;">· ${esc(p.address)}</span>`:''} ${p.avgRentalDays?`<span style="font-size:11px;color:${p.avgRentalDays<=7?'#10B981':'#F59E0B'};">· Avg ${p.avgRentalDays}d</span>`:''}</div>
       ${badgeSpan}
     </div>
     <div style="font-size:12px;color:#64748B;margin-bottom:8px;">Your hours: <strong style="color:#0D1F3C">${Math.round(ph.owner)}</strong>${state.settings.spouseEnabled?` · ${state.settings.spouseName||'Spouse'}: <strong>${Math.round(ph.spouse)}</strong>`:''}</div>
@@ -2819,7 +2818,7 @@ function vSettings(){
 }
 
 function setSetting(k,v){state.settings[k]=v;save();updateSB();toast('Setting saved.','success',{duration:1500});}
-async function resetAll(){
+async function resetAll(){_allowEmptySave=true;
   const ok=await dlgConfirm({title:'Reset all data?',body:'This permanently deletes all entries, properties, and settings. This cannot be undone.',confirmLabel:'Continue',danger:true});
   if(!ok)return;
   const code=await dlgPrompt({title:'Confirm reset',body:'Type RESET to permanently erase all data.',placeholder:'RESET',confirmLabel:'Reset everything',danger:true,expectedText:'RESET'});
@@ -3396,8 +3395,7 @@ async function exportXLSX(){
       const ts=mpT(p.id);
       const any=ts.some(t=>t.met);
       const best=ts.find(t=>t.met);
-      const _a=avgRentalInfo(p);
-      repsRows.push([p.name, _a.days==null?'Not set':(_a.days+(_a.substantiated?' (from '+_a.bookings+' bookings)':' (manual \u2014 unsubstantiated)')), Math.round(ph.owner), any?('\u2713 '+best.label):'\u2717 Does Not Qualify']);
+      repsRows.push([p.name, p.avgRentalDays||'Not set', Math.round(ph.owner), any?('✓ '+best.label):'✗ Does Not Qualify']);
       // Show which tests passed/failed
       ts.forEach(t=>{
         repsRows.push(['  '+t.name+' — '+t.label,'','',t.met?'✓ Met':'—']);
