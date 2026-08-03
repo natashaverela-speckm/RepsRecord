@@ -662,14 +662,35 @@ function mpT(pid){
   // COMPENSATED to manage the activity (§1.469-5T(b)(2)(ii)). otherHoursCompensated flags a paid
   // co-host / property manager. When set with logged other-hours, Test 7 cannot be auto-met.
   const paidManager=!!p.otherHoursCompensated&&(p.otherHours||0)>0;
+  // AUDIT FIX (C-3): §1.469-5T(b)(2)(iii) makes Test 7 UNAVAILABLE below the 100-hour floor,
+  // and §1.469-5T(b)(2)(ii) makes it unavailable where ANY other individual performs more
+  // management hours than the taxpayer — not only where that person is compensated.
+  // TAX.MP_TEST7_MIN was defined but never enforced; all three prongs are now applied.
+  const t7BelowFloor=!(ownerEff>TAX.MP_TEST7_MIN);
+  const t7Outworked=mo>ownerEff;
+  const t7Blocked=paidManager||t7BelowFloor||t7Outworked;
+  const t7Why=paidManager
+    ?'A paid co-host or property manager runs this activity, so Test 7 is unavailable (\u00A71.469-5T(b)(2)(ii)).'
+    :t7BelowFloor
+      ?`Test 7 requires MORE than ${TAX.MP_TEST7_MIN} hours (\u00A71.469-5T(b)(2)(iii)). You have ${Math.round(ownerEff)} hrs \u2014 ${Math.max(0,Math.ceil(TAX.MP_TEST7_MIN-ownerEff+0.01))} more needed before this test can be used.`
+      :t7Outworked
+        ?`Another individual performs more management hours than you (${Math.round(mo)} hrs vs your ${Math.round(ownerEff)} hrs), so Test 7 is unavailable (\u00A71.469-5T(b)(2)(ii)).`
+        :'';
+  // AUDIT FIX (C-3): Test 2 ("substantially all") cannot be satisfied where another participant
+  // holds a material share of the recorded hours. Previously this was pure self-certification.
+  const t2Share=(ownerEff+mo)>0?ownerEff/(ownerEff+mo):1;
+  const t2Blocked=mo>0&&t2Share<0.95;
+  const t2Why=t2Blocked
+    ?`Another participant accounts for ${Math.round((1-t2Share)*100)}% of recorded hours (${Math.round(mo)} hrs vs your ${Math.round(ownerEff)} hrs). "Substantially all" is not satisfied on these facts.`
+    :'';
   return[
     {id:1,name:'Test 1',label:'500 Hours',cite:'§1.469-5T(a)(1)',desc:'More than 500 hours in this activity during the year.',auto:true,met:ownerEff>TAX.MP_TEST1_HOURS},
-    {id:2,name:'Test 2',label:'Substantially All',cite:'§1.469-5T(a)(2)',desc:'Substantially all participation in the activity was yours. "Substantially all" is not quantified in the regulation; practitioners commonly use a 95%+ safe harbor (others combined < 5%).',auto:false,met:!!mn[2]},
+    {id:2,name:'Test 2',label:'Substantially All',cite:'§1.469-5T(a)(2)',desc:'Substantially all participation in the activity was yours. "Substantially all" is NOT defined in the regulations and there is NO safe harbor \u2014 practitioners commonly work to a benchmark around 95%, but that is a convention, not authority you can rely on.',auto:false,met:!t2Blocked&&!!mn[2],unavailable:t2Blocked,why:t2Why},
     {id:3,name:'Test 3',label:'100 Hrs + Most',cite:'§1.469-5T(a)(3)',desc:'More than 100 hours AND not less than any other individual\u2019s participation in the activity (including paid staff).',auto:true,met:ownerEff>TAX.MP_TEST3_HOURS&&ownerEff>=mo},
     {id:4,name:'Test 4',label:'SPA Aggregate',cite:'§1.469-5T(a)(4)',desc:'Activity is a Significant Participation Activity (>100 hrs in a trade or business in which you do not otherwise materially participate) and all your SPAs aggregate to more than 500 hours for the year. SPAs are non-rental trade-or-business activities only; LTR rental activities cannot generate SPAs.',auto:false,met:!!mn[4]},
     {id:5,name:'Test 5',label:'5 of Last 10 Yrs',cite:'§1.469-5T(a)(5)',desc:'Materially participated in this activity in any 5 of the 10 immediately preceding taxable years.',auto:true,met:(()=>{const py=(state.priorYearMP||{})[pid]||{};const last10=Array.from({length:10},(_,i)=>activeYear-1-i);return last10.filter(y=>py[y]).length>=5;})()},
     {id:6,name:'Test 6',label:'3 Prior Yrs (Personal Service Activity)',cite:'§1.469-5T(a)(6)',desc:'Materially participated 3 prior years when the activity was a personal service activity. Does not apply to most STRs — STR properties are almost never personal service activities (medical, law, engineering, etc.).',auto:false,met:!!mn[6]},
-    {id:7,name:'Test 7',label:'Facts & Circumstances',cite:'§1.469-5T(a)(7)',desc:'Participate on a regular, continuous, and substantial basis. Does NOT apply if any other person is compensated for managing the activity (§1.469-5T(b)(2)(ii)). Document frequency, duration, and nature of involvement.',auto:false,met:!paidManager&&!!mn[7],unavailable:paidManager},
+    {id:7,name:'Test 7',label:'Facts & Circumstances',cite:'§1.469-5T(a)(7)',desc:'Participate on a regular, continuous, and substantial basis. Does NOT apply if any other person is compensated for managing the activity (§1.469-5T(b)(2)(ii)). Requires MORE than 100 hours, and is unavailable if anyone is paid to manage the activity or if another individual does more management than you.',auto:false,met:!t7Blocked&&!!mn[7],unavailable:t7Blocked,why:t7Why},
   ];
 }
 
@@ -692,14 +713,30 @@ function mpGroupedLTR(){
   ltrs.forEach(p=>{const h=pH(p.id);owner+=h.owner;spouse+=(h.spouse||0);other+=(p.otherHours||0);if(p.otherHoursCompensated&&(p.otherHours||0)>0)paidManager=true;});
   const ownerEff=owner+spouse;
   const mo=policy==='conservative'?Math.max(spouse,other):other;
+  // AUDIT FIX (C-3): mirror the Test 7 / Test 2 limits on the pooled grouped activity.
+  const gT7BelowFloor=!(ownerEff>TAX.MP_TEST7_MIN);
+  const gT7Outworked=mo>ownerEff;
+  const gT7Blocked=paidManager||gT7BelowFloor||gT7Outworked;
+  const gT7Why=paidManager
+    ?'A grouped property is managed by a compensated person, so Test 7 is unavailable (\u00A71.469-5T(b)(2)(ii)).'
+    :gT7BelowFloor
+      ?`Test 7 requires MORE than ${TAX.MP_TEST7_MIN} hours across the combined activity (\u00A71.469-5T(b)(2)(iii)). You have ${Math.round(ownerEff)} hrs.`
+      :gT7Outworked
+        ?`Other individuals perform more management hours than you across the grouped activity (${Math.round(mo)} hrs vs your ${Math.round(ownerEff)} hrs), so Test 7 is unavailable (\u00A71.469-5T(b)(2)(ii)).`
+        :'';
+  const gT2Share=(ownerEff+mo)>0?ownerEff/(ownerEff+mo):1;
+  const gT2Blocked=mo>0&&gT2Share<0.95;
+  const gT2Why=gT2Blocked
+    ?`Other participants account for ${Math.round((1-gT2Share)*100)}% of recorded hours across the grouped activity. "Substantially all" is not satisfied on these facts.`
+    :'';
   return{
     properties:ltrs.length, owner, spouse, ownerEff, other, paidManager,
     tests:[
       {id:1,name:'Test 1',label:'500 Hours',cite:'§1.469-5T(a)(1)',desc:'More than 500 hours across all grouped long-term rentals during the year.',auto:true,met:ownerEff>TAX.MP_TEST1_HOURS},
-      {id:2,name:'Test 2',label:'Substantially All',cite:'§1.469-5T(a)(2)',desc:'Substantially all participation in the combined rental activity was yours.',auto:false,met:!!mn[2]},
+      {id:2,name:'Test 2',label:'Substantially All',cite:'§1.469-5T(a)(2)',desc:'Substantially all participation in the combined rental activity was yours. "Substantially all" is NOT defined in the regulations and there is no safe harbor.',auto:false,met:!gT2Blocked&&!!mn[2],unavailable:gT2Blocked,why:gT2Why},
       {id:3,name:'Test 3',label:'100 Hrs + Most',cite:'§1.469-5T(a)(3)',desc:'More than 100 hours across the combined activity AND not less than any other individual\u2019s participation.',auto:true,met:ownerEff>TAX.MP_TEST3_HOURS&&ownerEff>=mo},
       {id:5,name:'Test 5',label:'5 of Last 10 Yrs',cite:'§1.469-5T(a)(5)',desc:'Materially participated in this combined rental activity in any 5 of the last 10 taxable years.',auto:true,met:(()=>{const py=(state.priorYearMP||{})[LTR_GROUP_ID]||{};const last10=Array.from({length:10},(_,i)=>activeYear-1-i);return last10.filter(y=>py[y]).length>=5;})()},
-      {id:7,name:'Test 7',label:'Facts & Circumstances',cite:'§1.469-5T(a)(7)',desc:'Regular, continuous, and substantial participation in the combined activity. Unavailable if any grouped property is managed by a compensated person (§1.469-5T(b)(2)(ii)).',auto:false,met:!paidManager&&!!mn[7],unavailable:paidManager},
+      {id:7,name:'Test 7',label:'Facts & Circumstances',cite:'§1.469-5T(a)(7)',desc:'Regular, continuous, and substantial participation in the combined activity. Requires MORE than 100 hours across the combined activity, and is unavailable if any grouped property is managed by a compensated person or if others do more management than you.',auto:false,met:!gT7Blocked&&!!mn[7],unavailable:gT7Blocked,why:gT7Why},
     ]
   };
 }
@@ -2207,8 +2244,10 @@ function vMP(){
       const behind=mo>0&&ownerEff<mo;
       statusNote=`<div style="font-size:12px;color:#0E7490;margin-top:6px;">You have <strong>${Math.round(ownerEff)} hrs</strong>.${need>0?` Need <strong>${need} more hours</strong> to hit the 100-hour floor.`:''}${behind?` Also need to outwork the highest other participant (<strong>${Math.round(mo)} hrs</strong>).`:' You already outwork everyone else ✓'}</div>`;
     }
-    if(t.id===7&&paid){
-      statusNote=`<div style="font-size:12px;color:#991B1B;margin-top:6px;background:#FEF2F2;border-radius:6px;padding:6px 10px;">⛔ Not available — you have a paid co-host or property manager. This test is only for owners who run it themselves.</div>`;
+    // AUDIT FIX (C-3): a blocked test states the governing reason and offers no control.
+    if(t.unavailable){
+      statusBadge=`<span style="background:#FEE2E2;color:#991B1B;font-size:11px;font-weight:800;padding:3px 10px;border-radius:99px;">Not available on your facts</span>`;
+      statusNote=`<div style="font-size:12px;color:#991B1B;margin-top:6px;background:#FEF2F2;border-radius:6px;padding:8px 10px;line-height:1.6;">⛔ ${t.why||'This test is unavailable on your current facts.'}</div>`;
     }
 
     return`<div style="display:flex;gap:14px;padding:14px 0;border-bottom:.5px solid #F0FDFA;align-items:flex-start;">
@@ -2235,7 +2274,7 @@ function vMP(){
             </div>
             ${metCount>=5?'<div style="margin-top:8px;font-size:11px;color:#065F46;font-weight:700;">✓ 5+ years confirmed — Test 5 met automatically.</div>':'<div style="margin-top:8px;font-size:11px;color:#64748B;">Keep records (tax returns, prior logs) to substantiate each checked year in case of audit.</div>'}
           </div>`;
-        })():t.id===6?`<div style="margin-top:10px;padding:8px 10px;background:#FFFBEB;border-radius:6px;border:.5px solid #FDE68A;font-size:11px;color:#92400E;line-height:1.6;">⚠ This test almost never applies to rental properties. It's for personal service activities (law, medicine, engineering). If you're unsure, ask your CPA — but for most STR/LTR investors you can skip this.<br><label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-weight:600;color:#0D1F3C;"><input type="checkbox" ${t.met?'checked':''} data-chg="togMP" data-id="${manualId}" data-tid="${t.id}" style="accent-color:#14B8A6;width:14px;height:14px;"/>Yes — this was a personal service activity and I materially participated for 3 prior years</label></div>`:t.id===7?(paid?'':`<label style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;cursor:pointer;font-size:12px;font-weight:600;color:#0D1F3C;"><input type="checkbox" ${t.met?'checked':''} data-chg="togMP" data-id="${manualId}" data-tid="${t.id}" style="accent-color:#14B8A6;width:15px;height:15px;flex-shrink:0;margin-top:2px;"/>Yes — I self-certify that I ran this property on a regular, continuous, and substantial basis (I'll keep documentation)</label>`):!t.auto?`<label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:12px;font-weight:600;color:#0D1F3C;"><input type="checkbox" ${t.met?'checked':''} data-chg="togMP" data-id="${manualId}" data-tid="${t.id}" style="accent-color:#14B8A6;width:15px;height:15px;"/>Yes — I qualify for this test (I'll keep documentation)</label>`:''}
+        })():t.id===6?`<div style="margin-top:10px;padding:8px 10px;background:#FFFBEB;border-radius:6px;border:.5px solid #FDE68A;font-size:11px;color:#92400E;line-height:1.6;">⚠ This test almost never applies to rental properties. It's for personal service activities (law, medicine, engineering). If you're unsure, ask your CPA — but for most STR/LTR investors you can skip this.<br><label style="display:flex;align-items:center;gap:8px;margin-top:8px;cursor:pointer;font-weight:600;color:#0D1F3C;"><input type="checkbox" ${t.met?'checked':''} data-chg="togMP" data-id="${manualId}" data-tid="${t.id}" style="accent-color:#14B8A6;width:14px;height:14px;"/>Yes — this was a personal service activity and I materially participated for 3 prior years</label></div>`:t.unavailable?'':t.id===7?(t.unavailable?'':`<label style="display:flex;align-items:flex-start;gap:8px;margin-top:10px;cursor:pointer;font-size:12px;font-weight:600;color:#0D1F3C;"><input type="checkbox" ${t.met?'checked':''} data-chg="togMP" data-id="${manualId}" data-tid="${t.id}" style="accent-color:#14B8A6;width:15px;height:15px;flex-shrink:0;margin-top:2px;"/>Yes — I self-certify that I ran this property on a regular, continuous, and substantial basis (I'll keep documentation)</label>`):!t.auto?`<label style="display:flex;align-items:center;gap:8px;margin-top:10px;cursor:pointer;font-size:12px;font-weight:600;color:#0D1F3C;"><input type="checkbox" ${t.met?'checked':''} data-chg="togMP" data-id="${manualId}" data-tid="${t.id}" style="accent-color:#14B8A6;width:15px;height:15px;"/>Yes — I qualify for this test (I'll keep documentation)</label>`:''}
       </div>
     </div>`;
   }
@@ -2332,7 +2371,19 @@ ${grouped?(function(){
 }).join('')}`:''}`;
 }
 
-function togMP(pid,tid,val){if(!state.manualMP)state.manualMP={};if(!state.manualMP[pid])state.manualMP[pid]={};state.manualMP[pid][tid]=val;save();renderView();}
+// AUDIT FIX (C-3): validate before storing. A flag saved when the facts allowed it must not
+// survive a later change in those facts \u2014 mpT() re-evaluates on every read, and the write
+// itself is refused here with the governing reason surfaced to the user.
+function togMP(pid,tid,val){
+  if(!state.manualMP)state.manualMP={};
+  if(!state.manualMP[pid])state.manualMP[pid]={};
+  if(val){
+    const list=pid===LTR_GROUP_ID?mpGroupedLTR().tests:mpT(pid);
+    const t=(list||[]).find(x=>x.id===tid);
+    if(t&&t.unavailable){alert('This test is not available on your current facts.\n\n'+(t.why||''));renderView();return;}
+  }
+  state.manualMP[pid][tid]=val;save();renderView();
+}
 function togPriorYear(pid,yr,val){if(!state.priorYearMP)state.priorYearMP={};if(!state.priorYearMP[pid])state.priorYearMP[pid]={};state.priorYearMP[pid][yr]=val;save();renderView();}
 
 // ── REPORTS ──
