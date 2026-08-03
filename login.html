@@ -1,6 +1,23 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+<script>
+/* www -> apex canonicalisation.
+   Two live origins (repsrecord.com and www.repsrecord.com) are two separate
+   origins to a browser. That splits localStorage — a user who reaches the site
+   both ways sees two different-looking apps — and it broke the account-deletion
+   endpoint, whose CORS allowlist only covered the apex.
+   The proper fix is a 301 at Amplify, which is currently blocked by a missing
+   service role (AWSAmplifyDomainRole-...). This runs first in <head> so it
+   redirects before any script reads localStorage or fires a request.
+   REMOVE THIS once the Amplify redirect is live. */
+(function(){
+  if (location.hostname === 'www.repsrecord.com') {
+    location.replace('https://repsrecord.com' + location.pathname + location.search + location.hash);
+  }
+})();
+</script>
+
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://ehuttijifubonhhgnvzx.supabase.co; connect-src 'self' https://ehuttijifubonhhgnvzx.supabase.co wss://ehuttijifubonhhgnvzx.supabase.co; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'">
