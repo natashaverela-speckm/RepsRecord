@@ -580,6 +580,133 @@ async function load(){
 }
 
 let _localFailCount=0;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ATTESTATION LAYER (audit findings C-1, C-2) — stage 1: dual-write.
+//
+// Every entry is ALSO written to the `time_entries` table, where the database
+// sets created_at itself via trigger and refuses any client-supplied value.
+// That converts the log's timestamps from a taxpayer assertion into
+// independent corroboration — the difference between this and a spreadsheet.
+//
+// Design rules, in order of importance:
+//   1. NEVER block or break the existing save path. Every call here is
+//      fire-and-forget inside try/catch. If attestation fails, the user's data
+//      is still in localStorage and still in user_data exactly as before.
+//   2. Hook save(), not the eight individual call sites that mutate entries
+//      (submitEntry, saveQuickLog, dupePrevDay, CSV import, bulk delete,
+//      delEntry, saveEditEntry, property removal). A reconciler that diffs
+//      state.entries against what has already been attested covers all of
+//      them, including undo, and cannot be missed by a future code path.
+//   3. Edits never overwrite. A changed entry is written as a NEW version via
+//      the amend_entry function; the original row and its timestamp survive.
+//   4. Deletes are soft. A removed entry is marked deleted_at, not erased.
+//
+// user_data remains the source of truth for all reads and calculations during
+// this stage. Nothing in the UI changes.
+// ═══════════════════════════════════════════════════════════════════════════
+const ATTEST_KEY_PREFIX='repsrecord_attested_v1_';
+let _attestTimer=null, _attestBusy=false, _attestMap=null;
+
+function _attestKey(){return ATTEST_KEY_PREFIX+(_sbUser?_sbUser.id:'anon');}
+function _attestLoad(){
+  if(_attestMap)return _attestMap;
+  try{_attestMap=JSON.parse(localStorage.getItem(_attestKey())||'{}');}catch(e){_attestMap={};}
+  return _attestMap;
+}
+function _attestPersist(){
+  try{localStorage.setItem(_attestKey(),JSON.stringify(_attestMap||{}));}catch(e){}
+}
+// Content fingerprint: if any substantive field changes, this changes, and the
+// entry is amended rather than left stale.
+function _attestFingerprint(e){
+  return [e.date,e.hours,e.category,e.trackType||e.type,e.notes||'',e.propertyId||'',e.isSpouse?1:0].join('\u0001');
+}
+
+async function _attestHeaders(){
+  if(!_sbUser||!_sb)return null;
+  const{data:{session}}=await _sb.auth.getSession();
+  if(!session)return null;
+  return{'Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_ANON_KEY,
+         'Content-Type':'application/json','Accept':'application/json'};
+}
+
+function _attestRow(e){
+  return{
+    user_id:_sbUser.id,
+    legacy_id:e.id,
+    legacy_property_id:e.propertyId||null,
+    activity_date:e.date,
+    hours:Math.max(0.01,Number(e.hours)||0),
+    category:e.category||'Uncategorized',
+    track_type:(e.trackType||e.type)==='STR'?'STR':'REPS',
+    is_spouse:!!e.isSpouse,
+    notes:e.notes||''
+  };
+}
+
+async function attestSync(){
+  if(_attestBusy)return; 
+  const H=await _attestHeaders(); if(!H)return;
+  _attestBusy=true;
+  try{
+    const seen=_attestLoad();
+    const live=new Map((state.entries||[]).map(e=>[e.id,e]));
+
+    // ── 1. New entries ──────────────────────────────────────────────────────
+    const fresh=[...live.values()].filter(e=>e&&e.id&&e.date&&!seen[e.id]);
+    for(let i=0;i<fresh.length;i+=50){
+      const batch=fresh.slice(i,i+50);
+      const res=await fetch(SUPABASE_URL+'/rest/v1/time_entries',{
+        method:'POST',headers:Object.assign({},H,{'Prefer':'return=representation'}),
+        body:JSON.stringify(batch.map(_attestRow))});
+      if(res.ok){
+        const rows=await res.json();
+        rows.forEach(r=>{seen[r.legacy_id]={uuid:r.id,fp:_attestFingerprint(live.get(r.legacy_id)||{}),at:r.created_at};});
+      } else if(res.status===409){
+        // Already attested on another device — adopt the existing rows.
+        const ids=batch.map(e=>'"'+e.id+'"').join(',');
+        const q=await fetch(SUPABASE_URL+'/rest/v1/time_entries?select=id,legacy_id,created_at&legacy_id=in.('+ids+')',{headers:H});
+        if(q.ok)(await q.json()).forEach(r=>{seen[r.legacy_id]={uuid:r.id,fp:_attestFingerprint(live.get(r.legacy_id)||{}),at:r.created_at};});
+      }
+    }
+
+    // ── 2. Amended entries — new version, original preserved ────────────────
+    for(const e of live.values()){
+      const rec=seen[e.id];
+      if(!rec||!rec.uuid)continue;
+      const fp=_attestFingerprint(e);
+      if(fp===rec.fp)continue;
+      const res=await fetch(SUPABASE_URL+'/rest/v1/rpc/amend_entry',{
+        method:'POST',headers:H,
+        body:JSON.stringify({p_entry_id:rec.uuid,p_activity_date:e.date,
+          p_hours:Math.max(0.01,Number(e.hours)||0),p_category:e.category||'Uncategorized',
+          p_notes:e.notes||'',p_property_id:null,p_reason:'edited in app'})});
+      if(res.ok){const newId=await res.json();seen[e.id]={uuid:(typeof newId==='string'?newId:rec.uuid),fp:fp,at:rec.at};}
+    }
+
+    // ── 3. Removed entries — soft delete, never erased ──────────────────────
+    for(const legacyId of Object.keys(seen)){
+      if(live.has(legacyId))continue;
+      const rec=seen[legacyId];
+      if(!rec||!rec.uuid||rec.deleted)continue;
+      const res=await fetch(SUPABASE_URL+'/rest/v1/time_entries?id=eq.'+rec.uuid,{
+        method:'PATCH',headers:H,
+        body:JSON.stringify({deleted_at:new Date().toISOString(),delete_reason:'removed in app'})});
+      if(res.ok)rec.deleted=true;
+    }
+
+    _attestPersist();
+  }catch(err){
+    // Silent by design. The user's data is safe in localStorage and user_data;
+    // a failure here costs only the attestation for this round, which the next
+    // save() will retry.
+    console.warn('[attest] deferred:',err&&err.message);
+  }finally{_attestBusy=false;}
+}
+
+function scheduleAttest(){clearTimeout(_attestTimer);_attestTimer=setTimeout(attestSync,2500);}
+
 function save(){
   try{
     localStorage.setItem(SK,JSON.stringify(state));
@@ -593,6 +720,8 @@ function save(){
   // Debounce cloud push — wait 1.5s after last change
   clearTimeout(_syncTimer);
   _syncTimer=setTimeout(cloudSave,1500);
+  // Dual-write to the append-only attested log (audit C-1/C-2). Non-blocking.
+  scheduleAttest();
 }
 
 function yearEntries(){return state.entries.filter(e=>e.date&&e.date.startsWith(String(activeYear)));}
