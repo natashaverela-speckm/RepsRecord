@@ -2370,7 +2370,7 @@ async function archiveProp(id){
   if(!prop)return;
   const ok=await dlgConfirm({
     title:`Mark "${prop.name}" as Sold / Archived?`,
-    body:`This moves the property to your archive. All logged hours and entries are preserved for your audit history.\n\n⚠ IRC §469(g) note: If you sold this property, suspended passive activity losses may be released upon complete disposition. Confirm the tax treatment with your CPA before filing.`,
+    body:`This moves the property to your archive. All logged hours and entries are kept and still count toward your tests and reports.\n\n⚠ IRC §469(g) note: If you sold this property, suspended passive activity losses may be released upon complete disposition. Confirm the tax treatment with your CPA before filing.`,
     confirmLabel:'Archive Property',
   });
   if(!ok)return;
@@ -2394,7 +2394,16 @@ async function rmProp(id){
   if(!prop)return;
   const affectedIds=state.entries.filter(e=>e.propertyId===id).map(e=>e.id);
   const entryCount=affectedIds.length;
-  const ok=await dlgConfirm({title:'Delete property',body:`Delete property "${prop.name}"?`,confirmLabel:'Delete',danger:true});
+  const _hrs=state.entries.filter(e=>e.propertyId===id).reduce((s2,e)=>s2+(e.hours||0),0);
+  // AUDIT FIX: the first dialog gave no indication that entries were attached.
+  // A user could delete a property and only discover the consequence in the
+  // second dialog — or, clicking through, not at all.
+  const ok=await dlgConfirm({
+    title:'Delete property',
+    body:entryCount>0
+      ? `Delete "${prop.name}"?\n\nThis property has ${entryCount} time ${entryCount===1?'entry':'entries'} totalling ${fmtH(_hrs)}. You'll choose next whether to keep or remove them.`
+      : `Delete "${prop.name}"?\n\nThis property has no time entries.`,
+    confirmLabel:'Continue',danger:true});
   if(!ok)return;
   const removedProp=JSON.parse(JSON.stringify(prop));
   let keepEntries=true;
@@ -2404,7 +2413,7 @@ async function rmProp(id){
     // confirmLabel ("Keep entries") → keep; cancelLabel ("Delete entries") is the destructive option (intentional UX)
     keepEntries=await dlgConfirm({
       title:'Keep this property\u2019s entries?',
-      body:`This property has ${entryCount} time ${entryCount===1?'entry':'entries'}.\n\n"Keep entries" reassigns them to General RE.\n"Delete entries" permanently removes all ${entryCount}.`,
+      body:`This property has ${entryCount} time ${entryCount===1?'entry':'entries'}.\n\n"Keep entries" reassigns them to General RE — recommended if the work was really done.\n"Delete entries" removes all ${entryCount} from your logs and reports. They remain in your attested record with their original timestamps, but will no longer count toward any test.`,
       confirmLabel:'Keep entries',
       cancelLabel:'Delete entries'
     });
