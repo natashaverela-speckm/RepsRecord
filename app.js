@@ -558,88 +558,6 @@ async function cloudSave(){
   updateSyncIndicator();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// READ PATH (audit findings C-1/C-2, final stage)
-//
-// This is deliberately NOT a hard cutover. Replacing the blob read with a table
-// read would mean one failed fetch shows a user an empty account, and any entry
-// not yet attested (created offline, or before this feature existed) would
-// silently disappear. Both are the failure this project exists to prevent.
-//
-// Instead: load the blob exactly as before, then MERGE the attested rows over
-// the top. Rules, in order:
-//   1. An entry present in BOTH: the attested row wins for substantive fields
-//      and supplies the real server createdAt. The table is authoritative.
-//   2. An entry present ONLY in the table: adopt it. This is how an entry
-//      logged on another device survives a blob that never received it.
-//   3. An entry present ONLY locally: keep it untouched. It is either not yet
-//      attested or was created offline; attestSync() will pick it up.
-//   4. A fetch failure changes nothing. The blob stands.
-//
-// Nothing is ever deleted here. Removal only happens through the app's own
-// delete paths, which soft-delete server-side.
-// ═══════════════════════════════════════════════════════════════════════════
-function _rowToEntry(r){
-  return{
-    id:r.legacy_id,
-    createdAt:r.created_at,
-    date:r.activity_date,
-    propertyId:r.legacy_property_id||'',
-    trackType:r.track_type,
-    type:r.track_type,
-    category:r.category,
-    hours:Number(r.hours),
-    notes:r.notes||'',
-    isSpouse:!!r.is_spouse,
-    attachments:Array.isArray(r.attachments)?r.attachments:[]
-  };
-}
-
-async function hydrateFromAttested(){
-  if(!_sbUser||!_sb)return{skipped:'not signed in'};
-  try{
-    const{data:{session}}=await _sb.auth.getSession();
-    if(!session)return{skipped:'no session'};
-    const res=await fetch(`${SUPABASE_URL}/rest/v1/v_time_entries_current?user_id=eq.${_sbUser.id}&select=legacy_id,legacy_property_id,activity_date,hours,category,track_type,is_spouse,notes,attachments,created_at&order=activity_date.desc`,
-      {headers:{'Authorization':'Bearer '+session.access_token,'apikey':SUPABASE_ANON_KEY,'Accept':'application/json'}});
-    if(!res.ok)return{skipped:'fetch '+res.status};
-    const rows=await res.json();
-    if(!Array.isArray(rows))return{skipped:'bad payload'};
-
-    const local=new Map((state.entries||[]).map(e=>[e.id,e]));
-    const ledger=_attestLoad();
-    let updated=0,adopted=0,localOnly=0;
-
-    rows.forEach(r=>{
-      if(!r.legacy_id)return;
-      const merged=_rowToEntry(r);
-      if(local.has(r.legacy_id)){
-        // Preserve anything the table does not carry, then let the row win.
-        const prev=local.get(r.legacy_id);
-        local.set(r.legacy_id,Object.assign({},prev,merged));
-        updated++;
-      }else{
-        local.set(r.legacy_id,merged);
-        adopted++;
-      }
-      // Keep the ledger in step so attestSync() does not re-insert these.
-      const cur=local.get(r.legacy_id);
-      ledger[r.legacy_id]=Object.assign({},ledger[r.legacy_id]||{},
-        {at:r.created_at,fp:_attestFingerprint(cur)});
-    });
-
-    (state.entries||[]).forEach(e=>{if(!ledger[e.id])localOnly++;});
-
-    state.entries=[...local.values()];
-    _attestPersist();
-    try{localStorage.setItem(SK,JSON.stringify(state));}catch(e){}
-    return{rows:rows.length,updated,adopted,localOnly,total:state.entries.length};
-  }catch(err){
-    console.warn('[hydrate] deferred:',err&&err.message);
-    return{skipped:err&&err.message};
-  }
-}
-
 async function load(){
   // Try cloud first when authenticated
   if(_sbUser&&_sb){
@@ -659,8 +577,6 @@ async function load(){
         }
         localStorage.setItem(SK,JSON.stringify(state));// mirror to localStorage as offline cache
         _syncStatus='synced';updateSyncIndicator();
-        // Merge the attested rows over the blob (see hydrateFromAttested).
-        await hydrateFromAttested();
         return;
       }catch(e){}
     }
@@ -682,9 +598,6 @@ async function load(){
       }
     }
   }catch(e){}
-  // Blob came from localStorage (offline or cloud unavailable). Still try to
-  // merge attested rows — if the fetch fails, this is a no-op.
-  await hydrateFromAttested();
   // If authenticated but no cloud data yet, push local data up automatically
   if(_sbUser&&_sb){
     _syncStatus='local';
@@ -3158,7 +3071,7 @@ function toggleRemy(){
     // Greeting if no messages yet
     if(remyMessages.length===0){
       const ctx=buildRemyCtx();
-      const rh=Math.round(ctx.rh||0);
+      const rh=Math.round((ctx.rh||0)*100)/100;   // exact to 2dp; never round hours in a tax record
       const greeting=ctx.ok
         ?`Hi! I'm Remy 👋 Your tracked data meets both REPS tests this year (${rh} hrs). Remember each rental is non-passive only if you also materially participate in it. What would you like to dig into?`
         :`Hi! I'm Remy 👋 You have ${rh} hrs logged — ${Math.max(0,Math.ceil(750-rh+0.01))} more needed to exceed the 750-hr test. How can I help?`;
@@ -3187,7 +3100,10 @@ function buildRemyCtx(){
       const ph_=pH(p.id);
       return{
         name:p.name,type:p.type,
-        avgRentalDays:p.avgRentalDays||null,
+        avgRentalDays:(()=>{const a=avgRentalInfo(p);return a.days;})(),
+        avgRentalSource:(()=>{const a=avgRentalInfo(p);return a.source;})(),        // 'computed' | 'manual' | 'none'
+        avgRentalSubstantiated:(()=>{const a=avgRentalInfo(p);return a.substantiated;})(),
+        bookingCount:(p.bookings||[]).length,
         otherHours:p.otherHours||0,
         otherHoursCompensated:!!p.otherHoursCompensated,
         ownerHrs:ph_.owner,
