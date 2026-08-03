@@ -174,7 +174,6 @@ const CLICK_ACTIONS={
   addPropType:el=>{showPropForm=true;go('properties');setTimeout(()=>{const tp=document.getElementById('p-tp');if(tp){tp.value=el.dataset.proptype;togglePropType();}},50);},
 };
 const CHANGE_ACTIONS={
-  setTaxpayerName:el=>setTaxpayerName(el.value),
   setYear:el=>{activeYear=parseInt(el.value);renderView();},
   importFile:el=>handleImportFile(el),
   previewFiles:el=>previewFiles(el),
@@ -706,39 +705,6 @@ async function attestSync(){
   }finally{_attestBusy=false;}
 }
 
-// ── Report support (audit finding H-4) ──────────────────────────────────────
-// The ledger written by attestSync() holds the database-set created_at for each
-// entry. That is the only field in the system a taxpayer cannot set, which makes
-// it the most useful column in an examination — and until now it was captured
-// but never shown in the report an examiner would actually read.
-function attestLookup(legacyId){
-  const m=_attestLoad(); const r=m&&m[legacyId];
-  return (r&&r.at)?r:null;
-}
-function attestLagDays(entryDate,createdAtIso){
-  try{
-    const a=new Date(entryDate+'T00:00:00Z'), b=new Date(createdAtIso);
-    return Math.max(0,Math.round((Date.UTC(b.getUTCFullYear(),b.getUTCMonth(),b.getUTCDate())-a.getTime())/86400000));
-  }catch(e){return null;}
-}
-function attestStats(entries){
-  let attested=0,within7=0,within30=0,later=0,unattested=0;
-  entries.forEach(e=>{
-    const r=attestLookup(e.id);
-    if(!r){unattested++;return;}
-    attested++;
-    const d=attestLagDays(e.date,r.at);
-    if(d===null)return;
-    if(d<=7)within7++; else if(d<=30)within30++; else later++;
-  });
-  return{attested,within7,within30,later,unattested,total:entries.length};
-}
-function fmtLogged(iso){
-  if(!iso)return null;
-  try{const d=new Date(iso);return d.toISOString().slice(0,10)+' '+d.toISOString().slice(11,16)+'Z';}catch(e){return null;}
-}
-function setTaxpayerName(v){state.settings.taxpayerName=(v||'').slice(0,120);save();}
-
 function scheduleAttest(){clearTimeout(_attestTimer);_attestTimer=setTimeout(attestSync,2500);}
 
 function save(){
@@ -911,8 +877,43 @@ function ltrGroupMet(){return mpGroupedLTR().tests.some(t=>t.met);}
 // necessary but NOT sufficient. We do not yet capture "significant personal services",
 // so the 8–30-day band is reported as CONDITIONAL rather than auto-qualifying, and
 // >30-day / unset properties do not qualify on material participation alone.
+// ── Average rental period provenance (audit finding H-3) ────────────────────
+// The average period of customer use is the THRESHOLD fact for the entire STR
+// position: fail Reg. §1.469-1T(e)(3)(ii) and the activity stays a rental
+// activity, making every logged hour irrelevant. A figure typed into a box is
+// not evidence of it. This returns the value together with where it came from,
+// so every screen can be honest about which it is showing.
+function avgRentalInfo(p){
+  const bk=(p&&Array.isArray(p.bookings))?p.bookings.filter(b=>b&&b.checkIn&&b.checkOut):[];
+  if(bk.length){
+    const nights=bk.reduce((s,b)=>{
+      const d=Math.round((new Date(b.checkOut)-new Date(b.checkIn))/86400000);
+      return s+(d>0?d:0);
+    },0);
+    if(nights>0){
+      return{days:Math.round((nights/bk.length)*10)/10,source:'computed',substantiated:true,
+             bookings:bk.length,nights:nights,
+             basis:`${nights} total nights \u00F7 ${bk.length} booking${bk.length===1?'':'s'} (Reg. \u00A71.469-1T(e)(3)(iii))`};
+    }
+  }
+  const m=(p&&p.avgRentalDays!=null&&p.avgRentalDays!=='')?Number(p.avgRentalDays):null;
+  if(m!=null&&!isNaN(m)){
+    return{days:m,source:'manual',substantiated:false,bookings:0,nights:0,
+           basis:'Entered manually \u2014 no booking records on file'};
+  }
+  return{days:null,source:'none',substantiated:false,bookings:0,nights:0,basis:'Not established'};
+}
+// Short inline marker used wherever the average is displayed.
+function avgFlag(p,style){
+  const a=avgRentalInfo(p);
+  if(a.days==null||a.substantiated)return'';
+  return style==='badge'
+    ? `<span class="badge b-amber" title="No booking records support this figure">\u26A0 unsubstantiated</span>`
+    : `<span style="font-size:10.5px;color:#B45309;font-weight:700;" title="No booking records support this figure">\u26A0 unsubstantiated</span>`;
+}
+
 function strGate(p){
-  const d=(p&&p.avgRentalDays!=null&&p.avgRentalDays!=='')?Number(p.avgRentalDays):null;
+  const d=avgRentalInfo(p).days;               // bookings are authoritative when present
   if(d==null||isNaN(d))return'unknown';        // average not set yet
   if(d<=TAX.STR_AVG_DAYS)return'exempt';        // ≤7   → §(ii)(A): not a rental activity
   if(d<=TAX.STR_MID_DAYS)return'services';      // 8–30 → §(ii)(B): needs significant personal services
@@ -1690,11 +1691,12 @@ ${state.properties.filter(p=>!p.sold).map(p=>{
       <div class="prop-nm">${esc(p.name)}</div>${p.address?`<div class="prop-addr">${esc(p.address)}</div>`:''}
       <div class="prop-tags">
         <span class="badge ${p.type==='STR'?'b-blue':'b-amber'}">${p.type}</span>
-        ${p.type==='STR'&&p.avgRentalDays?`<span class="badge ${p.avgRentalDays<=7?'b-met':p.avgRentalDays<=30?'b-amber':'b-no'}">Avg ${p.avgRentalDays}d ${p.avgRentalDays<=7?'✓ qualifies':p.avgRentalDays<=30?'⚠ needs personal services':'✗ >30 days'}${p.bookings&&p.bookings.length?' 📅':''}</span>`:''}
+        ${p.type==='STR'&&avgRentalInfo(p).days!=null?(()=>{const a=avgRentalInfo(p);return`<span class="badge ${a.days<=7?'b-met':a.days<=30?'b-amber':'b-no'}" title="${esc(a.basis)}">Avg ${a.days}d ${a.days<=7?'\u2713 qualifies':a.days<=30?'\u26A0 needs personal services':'\u2717 >30 days'}${a.substantiated?' \uD83D\uDCC5':''}</span>${avgFlag(p,'badge')}`;})():''}
         ${p.otherHours>0?`<span style="font-size:11px;color:#64748B;">Others: ${p.otherHours}h/yr</span>`:''}
       </div>
       ${p.type==='STR'&&p.avgRentalDays>7&&p.avgRentalDays<=30?`<div style="margin-top:8px;font-size:11px;color:#92400E;background:#FFF7ED;border:1px solid #FDE68A;border-radius:6px;padding:6px 10px;line-height:1.6;">⚠ <strong>8–30 day average rental period:</strong> Material participation alone may not be enough. The IRS also requires "significant personal services" under §1.469-1T(e)(3)(ii)(B). Confirm with your CPA.</div>`:''}
       ${p.type==='STR'&&p.avgRentalDays>30?`<div style="margin-top:8px;font-size:11px;color:#991B1B;background:#FEF2F2;border:1px solid #FECACA;border-radius:6px;padding:6px 10px;line-height:1.6;">⛔ <strong>Average rental period over 30 days</strong> — the STR exception does not apply. This property is treated as a standard rental under §469 and needs REPS for non-passive treatment.</div>`:''}
+      ${p.type==='STR'&&avgRentalInfo(p).source==='manual'?`<div style="margin-top:8px;font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:7px 10px;line-height:1.6;">\u26A0 <strong>This average is entered manually.</strong> The average period of customer use decides whether this property escapes rental treatment at all \u2014 if it fails, every hour you log here is irrelevant. Add your bookings below and the figure will be calculated from them, and the audit report will show the arithmetic instead of asserting a number.</div>`:''}
       ${p.type==='STR'&&!p.avgRentalDays?`<div style="margin-top:8px;font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:6px 10px;">⚠ No average rental period set — edit this property or use the Booking Log to calculate it. This is required to confirm STR exception eligibility.</div>`:''}
     </div>
     <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
@@ -2575,33 +2577,7 @@ function vReports(){
   const _strHrsTotal=ye.filter(e=>!e.isSpouse&&e.trackType==='STR').reduce((s,e)=>s+(e.hours||0),0);
   const _strHrsCounted=_inc?ye.filter(e=>!e.isSpouse&&e.trackType==='STR'&&_strYesIds.has(e.propertyId)).reduce((s,e)=>s+(e.hours||0),0):0;
   const strHrsExcluded=Math.max(0,_strHrsTotal-_strHrsCounted);
-  const _att=attestStats(sorted);
-  const _tp=(state.settings.taxpayerName||'').trim();
-  const _gen=new Date();
   return`
-<div class="card" style="border:1.5px solid #0D1F3C;margin-bottom:14px;">
-  <div style="font-size:10px;font-weight:800;letter-spacing:.09em;color:#64748B;text-transform:uppercase;margin-bottom:10px;">Contemporaneous Time Record \u2014 IRC \u00A7469</div>
-  <table style="width:100%;font-size:12px;border-collapse:collapse;">
-    <tr><td style="padding:3px 0;color:#64748B;width:36%;">Taxpayer</td><td style="padding:3px 0;"><input value="${esc(_tp)}" placeholder="Enter name as filed" data-chg="setTaxpayerName" style="border:none;border-bottom:1px solid #CBD5E1;font-size:12px;font-weight:700;color:#0D1F3C;padding:2px 0;width:100%;max-width:280px;background:transparent;font-family:inherit;"/></td></tr>
-    <tr><td style="padding:3px 0;color:#64748B;">Taxpayer identification no.</td><td style="padding:3px 0;color:#94A3B8;">___________________ &nbsp;<span style="font-size:10.5px;">(write in at filing \u2014 deliberately not stored)</span></td></tr>
-    <tr><td style="padding:3px 0;color:#64748B;">Tax year</td><td style="padding:3px 0;font-weight:700;color:#0D1F3C;">${activeYear}</td></tr>
-    <tr><td style="padding:3px 0;color:#64748B;">Report generated</td><td style="padding:3px 0;color:#0D1F3C;">${_gen.toISOString().slice(0,10)} ${_gen.toISOString().slice(11,16)}Z</td></tr>
-    <tr><td style="padding:3px 0;color:#64748B;">Entries in this report</td><td style="padding:3px 0;color:#0D1F3C;">${sorted.length} \u00B7 ${fmtH(tot)} total</td></tr>
-  </table>
-
-  <div style="margin-top:12px;padding:11px 13px;border-radius:8px;background:${_att.unattested===0?'#F0FDFA':'#FFFBEB'};border:1px solid ${_att.unattested===0?'#99F6E4':'#FDE68A'};">
-    <div style="font-size:11.5px;font-weight:800;color:#0D1F3C;margin-bottom:6px;">Record integrity \u2014 when each entry was created</div>
-    <div style="font-size:11.5px;color:#334155;line-height:1.75;">Each entry below carries a creation timestamp <strong>set by the server</strong> at the moment it was saved. It is not supplied by this device and cannot be altered by the account holder. Editing an entry preserves the original and its timestamp as a superseded version; deleting an entry marks it removed rather than erasing it.</div>
-    <div style="margin-top:8px;display:flex;gap:14px;flex-wrap:wrap;font-size:11.5px;">
-      <span style="color:#065F46;"><strong>${_att.within7}</strong> logged within 7 days of the activity</span>
-      <span style="color:#0E7490;"><strong>${_att.within30}</strong> within 8\u201330 days</span>
-      <span style="color:#92400E;"><strong>${_att.later}</strong> after 30 days</span>
-      ${_att.unattested>0?`<span style="color:#991B1B;"><strong>${_att.unattested}</strong> without a server timestamp</span>`:''}
-    </div>
-    ${_att.unattested>0?`<div style="margin-top:8px;font-size:11px;color:#92400E;line-height:1.6;">\u26A0 Entries without a server timestamp predate this feature or were created offline. They remain valid records, but their creation date rests on this device rather than on independent corroboration \u2014 disclose them as such if asked.</div>`:''}
-  </div>
-</div>
-
 <div class="ph">
   <div class="ph-row">
     <div><h1 class="pg-title">Audit Report <span style='font-size:13px;font-weight:400;color:#64748B;'>/ Real-Time Hour Log</span></h1><div class="pg-sub">IRC §469(c)(7) REPS &amp; Temp. Reg. §1.469-5T STR — Tax Year ${activeYear} — Prepared for IRS substantiation</div></div>
@@ -2627,7 +2603,7 @@ ${sps.length?`
   ${sps.map(p=>{const ph=pH(p.id),ts=mpT(p.id),any=ts.some(t=>t.met),best=ts.find(t=>t.met),q=strQualifies(p);const bl=best?best.label:'';const badgeSpan=q==='yes'?`<span class="badge b-met">✓ Qualifies — MP via ${bl}</span>`:any?`<span class="badge" style="background:#FEF3C7;color:#92400E;">${q==='conditional'?'⚠ MP via '+bl+' · 8–30-day avg (needs significant services)':'⚠ MP via '+bl+' · period gate not met'}</span>`:'<span class="badge b-no">Does Not Qualify</span>';return`
   <div style="margin-bottom:14px;padding-bottom:14px;border-bottom:.5px solid #F0FDFA;">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-      <div><strong>${esc(p.name)}</strong>${p.address?` <span style="font-size:11px;color:#64748B;">· ${esc(p.address)}</span>`:''} ${p.avgRentalDays?`<span style="font-size:11px;color:${p.avgRentalDays<=7?'#10B981':'#F59E0B'};">· Avg ${p.avgRentalDays}d</span>`:''}</div>
+      <div><strong>${esc(p.name)}</strong>${p.address?` <span style="font-size:11px;color:#64748B;">· ${esc(p.address)}</span>`:''} ${(()=>{const a=avgRentalInfo(p);if(a.days==null)return'<span style="font-size:11px;color:#B45309;">\u00B7 avg rental period not established</span>';return`<span style="font-size:11px;color:${a.days<=7?'#10B981':'#F59E0B'};">\u00B7 Avg ${a.days}d</span> <span style="font-size:10.5px;color:${a.substantiated?'#64748B':'#B45309'};">(${esc(a.basis)})</span>`;})()}</div>
       ${badgeSpan}
     </div>
     <div style="font-size:12px;color:#64748B;margin-bottom:8px;">Your hours: <strong style="color:#0D1F3C">${Math.round(ph.owner)}</strong>${state.settings.spouseEnabled?` · ${state.settings.spouseName||'Spouse'}: <strong>${Math.round(ph.spouse)}</strong>`:''}</div>
@@ -2674,10 +2650,9 @@ ${ltrs.length?`
   ${thinCount>0?`<div style="margin-bottom:12px;font-size:11.5px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:8px;padding:9px 13px;line-height:1.6;">⚠ <strong>${thinCount} ${thinCount===1?'entry has':'entries have'} a missing or very short description.</strong> Contemporaneous logs should state what was done, for which property, and the outcome — vague or blank descriptions are a common audit weakness (e.g. <em>Pohoski v. Commissioner</em>, <em>Moss v. Commissioner</em>). Flagged rows are marked ⚠ below.</div>`:''}
   ${sorted.length===0?`<div class="empty" style="padding:20px 0;"><div class="empty-tx">No entries logged yet.</div></div>`:`
   <table style="table-layout:fixed;">
-    <thead><tr><th style="width:9%">Date</th><th style="width:14%">Logged on <span style="font-weight:400;text-transform:none;">(server)</span></th><th style="width:14%">Property</th><th style="width:6%">Type</th><th style="width:19%">Activity</th><th style="width:7%">Hours</th><th style="width:31%">Notes</th></tr></thead>
+    <thead><tr><th style="width:11%">Date</th><th style="width:17%">Property</th><th style="width:8%">Type</th><th style="width:25%">Activity</th><th style="width:8%">Hours</th><th style="width:31%">Notes</th></tr></thead>
     <tbody>${sorted.map(e=>{const pr=state.properties.find(p=>p.id===e.propertyId);return`<tr>
       <td style="font-size:11px;color:#64748B;">${e.date}</td>
-      <td style="font-size:10.5px;line-height:1.35;">${(()=>{const r=attestLookup(e.id);if(!r)return'<span style="color:#B45309;" title="No server timestamp">not attested</span>';const d=attestLagDays(e.date,r.at);const c=d===null?'#64748B':d<=7?'#065F46':d<=30?'#0E7490':'#92400E';return`<span style="color:${c};">${fmtLogged(r.at)}</span>${d!==null?`<br><span style="color:#94A3B8;font-size:9.5px;">${d===0?'same day':d+' day'+(d===1?'':'s')+' later'}</span>`:''}`;})()}</td>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;">${pr?.name||'General'}</td>
       <td><span class="tb tb-${e.trackType==='STR'?'s':'r'}">${e.trackType}</span>${e.isSpouse?'<span class="tb tb-sp">SP</span>':''}</td>
       <td style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;">${esc(e.category)}</td>
@@ -3421,7 +3396,8 @@ async function exportXLSX(){
       const ts=mpT(p.id);
       const any=ts.some(t=>t.met);
       const best=ts.find(t=>t.met);
-      repsRows.push([p.name, p.avgRentalDays||'Not set', Math.round(ph.owner), any?('✓ '+best.label):'✗ Does Not Qualify']);
+      const _a=avgRentalInfo(p);
+      repsRows.push([p.name, _a.days==null?'Not set':(_a.days+(_a.substantiated?' (from '+_a.bookings+' bookings)':' (manual \u2014 unsubstantiated)')), Math.round(ph.owner), any?('\u2713 '+best.label):'\u2717 Does Not Qualify']);
       // Show which tests passed/failed
       ts.forEach(t=>{
         repsRows.push(['  '+t.name+' — '+t.label,'','',t.met?'✓ Met':'—']);
