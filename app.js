@@ -1803,8 +1803,8 @@ ${state.properties.filter(p=>!p.sold).map(p=>{
   <div style="position:absolute;top:0;right:0;">
     <button data-act="openQuickLog" data-id="${p.id}" style="background:#14B8A6;color:#fff;border:none;font-size:12px;font-weight:700;padding:7px 14px;border-radius:0 10px 0 10px;cursor:pointer;letter-spacing:.01em;" aria-label="Log time for ${esc(p.name)}">⏱ Log Time</button>
   </div>
-  <div style="display:flex;justify-content:space-between;align-items:flex-start;padding-right:90px;">
-    <div>
+  <div class="prop-head">
+    <div class="prop-head-main">
       <div class="prop-nm">${esc(p.name)}</div>${p.address?`<div class="prop-addr">${esc(p.address)}</div>`:''}
       <div class="prop-tags">
         <span class="badge ${p.type==='STR'?'b-blue':'b-amber'}">${p.type}</span>
@@ -1816,9 +1816,9 @@ ${state.properties.filter(p=>!p.sold).map(p=>{
       ${p.type==='STR'&&avgRentalInfo(p).source==='manual'?`<div style="margin-top:8px;font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:7px 10px;line-height:1.6;">\u26A0 <strong>This average is entered manually.</strong> The average period of customer use decides whether this property escapes rental treatment at all \u2014 if it fails, every hour you log here is irrelevant. Add your bookings below and the figure will be calculated from them.</div>`:''}
       ${p.type==='STR'&&!p.avgRentalDays?`<div style="margin-top:8px;font-size:11px;color:#92400E;background:#FFFBEB;border:1px solid #FDE68A;border-radius:6px;padding:6px 10px;">⚠ No average rental period set — edit this property or use the Booking Log to calculate it. This is required to confirm STR exception eligibility.</div>`:''}
     </div>
-    <div style="text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
-      <div style="font-size:26px;font-weight:900;color:#0D1F3C;margin-top:28px;">${Math.round(hrs)}<span style="font-size:13px;font-weight:400;color:#64748B;"> hrs</span></div>
-      <div style="display:flex;gap:6px;">
+    <div class="prop-head-side">
+      <div class="prop-hrs">${Math.round(hrs)}<span style="font-size:13px;font-weight:400;color:#64748B;"> hrs</span></div>
+      <div class="prop-actions">
         <button class="btn btn-sm" style="background:#F0FDFA;border:1px solid #CCFBF1;color:#0E7490;font-size:11px;" data-act="togglePropEntries" data-id="${p.id}">📋 View Entries (${propEntries.length})</button>
         ${p.type==='STR'?`<button class="btn btn-sm" style="background:#FEF3C7;border:1px solid #FDE68A;color:#92400E;font-size:11px;" data-act="toggleBookingLog" data-id="${p.id}">📅 Bookings (${(p.bookings||[]).length})</button>`:''}
         <button class="btn btn-sm" style="background:#EFF6FF;border:1px solid #BFDBFE;color:#1D4ED8;font-size:11px;" data-act="toggleEditProp" data-id="${p.id}">✏️ Edit</button>

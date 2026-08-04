@@ -141,6 +141,12 @@ tr:last-child td{border-bottom:none;}
 .prop-nm{font-size:15px;font-weight:700;color:#0D1F3C;}
 .prop-addr{font-size:12px;color:#64748B;margin-top:2px;}
 .prop-tags{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap;align-items:center;}
+.prop-head{display:flex;justify-content:space-between;align-items:flex-start;padding-right:90px;gap:12px;}
+.prop-head-main{min-width:0;}
+.prop-head-side{text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:8px;flex-shrink:0;}
+.prop-hrs{font-size:26px;font-weight:900;color:#0D1F3C;margin-top:28px;}
+/* Buttons must wrap rather than run off the edge. */
+.prop-actions{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end;}
 .mp-row{display:flex;align-items:flex-start;gap:14px;padding:14px 0;border-bottom:.5px solid #F0FDFA;}
 .mp-row:last-child{border-bottom:none;}
 .mp-num{width:38px;height:38px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800;flex-shrink:0;}
@@ -233,6 +239,14 @@ button:focus-visible,a:focus-visible,select:focus-visible,input:focus-visible,te
   .field input,.field select,.field textarea{font-size:16px;}/* prevents iOS zoom on focus */
   .rc{flex-direction:column;align-items:flex-start;gap:10px;}
   .prop-c{flex-direction:column;}
+  /* Property card on phones: stack the two columns instead of squeezing the
+     left one into a narrow strip while the buttons overflow off-screen. */
+  .prop-head{flex-direction:column;padding-right:0;gap:14px;}
+  .prop-head-main{padding-right:96px;}   /* clear the absolute Log Time button */
+  .prop-head-side{width:100%;align-items:stretch;text-align:left;}
+  .prop-hrs{margin-top:0;font-size:22px;}
+  .prop-actions{justify-content:flex-start;}
+  .prop-actions .btn{flex:1 1 calc(50% - 3px);justify-content:center;white-space:nowrap;}
   table{font-size:12px;}
   th,td{padding:6px 0;}
   /* Reports: stack the rstat cards */
