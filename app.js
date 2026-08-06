@@ -332,8 +332,8 @@ async function signOut(){
 // ── Paywall gate ──
 // Accounts that always have access (never locked out). Owner addresses go here.
 const PAYWALL_ADMINS=['admin@repsrecord.com'];
-const PAY_MONTHLY='https://buy.stripe.com/bJedR19mL8bK7rY3nuebu00';// fallback
-const PAY_ANNUAL='https://buy.stripe.com/aFadR17eD9fOfYubU0ebu01';// fallback
+const PAY_MONTHLY='https://buy.stripe.com/28E6oz9mL8bK13Af6cebu03';// fallback
+const PAY_ANNUAL='https://buy.stripe.com/8x2fZ92YnajS9A6e28ebu02';// fallback
 // Full-screen overlay shown the instant a plan is clicked, so the user sees immediate
 // feedback ("Opening secure checkout…") instead of the app's own loading state flashing
 // behind the paywall while we fetch the Stripe session URL. Returns a dismiss() fn; on a
