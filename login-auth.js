@@ -296,7 +296,7 @@ document.addEventListener('DOMContentLoaded', () => {
   if (plan) {
     const badge = $('plan-badge');
     if (badge) {
-      const label = plan === 'annual' ? 'Annual — $199/yr (save 43%)' : 'Monthly — $29/mo';
+      const label = plan === 'annual' ? 'Annual — $249/yr (save 47%)' : 'Monthly — $39/mo';
       badge.innerHTML = `✅ <strong>${label}</strong> · 7-day free trial included`;
       badge.style.display = 'block';
     }
